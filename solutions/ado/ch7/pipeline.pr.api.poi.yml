@@ -1,0 +1,141 @@
+trigger:
+  - none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - name: WORKDIR
+    value: "$(System.DefaultWorkingDirectory)/apis/poi"
+  - name: DOTNET_VERSION
+    value: "3.1.x"
+
+jobs:
+  - job: Test
+    displayName: Test
+    steps:
+      - task: UseDotNet@2
+        displayName: "Setup .NET Core $(DOTNET_VERSION)"
+        inputs:
+          packageType: "sdk"
+          version: $(DOTNET_VERSION)
+
+      - task: DotNetCoreCLI@2
+        displayName: "Restore dependencies"
+        inputs:
+          command: "restore"
+          projects: "$(WORKDIR)/*.sln"
+          feedsToUse: "select"
+
+      - task: DotNetCoreCLI@2
+        displayName: "Build the App"
+        inputs:
+          command: "build"
+          arguments: "--no-restore"
+          workingDirectory: "$(WORKDIR)"
+
+      - task: DotNetCoreCLI@2
+        name: UnitTest
+        displayName: "Run Unit Tests"
+        inputs:
+          command: "test"
+          arguments: '--no-build --filter "FullyQualifiedName~UnitTest"'
+          workingDirectory: "$(WORKDIR)"
+
+      - task: CreateWorkItem@1
+        displayName: "Create an issue (bug)"
+        condition: and(failed(), ne(variables['Build.Reason'], 'PullRequest'))
+        inputs:
+          workItemType: "Bug"
+          title: "Unit Test failure"
+          assignedTo: "$(Build.RequestedForId)"
+          fieldMappings: |
+            System Info=Test details: $(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)&view=ms.vss-test-web.build-test-results-tab
+          associate: true
+
+      - task: CreatePRCommentTask@1
+        displayName: "Create a PR comment"
+        condition: and(failed(), eq(variables['Build.Reason'], 'PullRequest'))
+        inputs:
+          AuthType: "system"
+          Comment: |
+            ### Unit Test `failure`
+            <details>
+            <summary>Pipeline details</summary>
+
+            Pipeline name: `$(Build.DefinitionName)`
+            Action: `$(Build.Reason)`
+            Job: `$(System.JobName)`
+            PR: [$(System.PullRequest.PullRequestId)]($(System.PullRequest.SourceRepositoryURI)/pullrequest/$(System.PullRequest.PullRequestId))
+            </details>
+
+            Test details: [Run #$(Build.BuildId)]($(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)&view=ms.vss-test-web.build-test-results-tab)
+            Pusher: @<$(Build.RequestedForId)>
+
+  - job: SecretsScanningCredScan
+    displayName: "Secrets Scanning - CredScan"
+    pool:
+      vmImage: windows-latest
+    steps:
+      - checkout: self
+
+      - task: CredScan@3
+        displayName: "Scan source code for committed credentials"
+        inputs:
+          toolVersion: "2.2.7.8"
+          batchSize: "32"
+
+      - task: SdtReport@2
+        displayName: "Generates a report from the CredScan results"
+        inputs:
+          GdnExportAllTools: false
+          GdnExportGdnToolCredScan: true
+          GdnExportGdnToolCredScanSeverity: "Warning"
+
+      - task: PublishSecurityAnalysisLogs@3
+        displayName: "Publishes artifact to CodeAnalysisLogs"
+        inputs:
+          ArtifactName: "CodeAnalysisLogs"
+          ArtifactType: "Container"
+          PublishProcessedResults: true
+          AllTools: false
+          AntiMalware: false
+          APIScan: false
+          Armory: false
+          Bandit: false
+          BinSkim: false
+          CodesignValidation: false
+          CredScan: true
+          CSRF: false
+          ESLint: false
+          Flawfinder: false
+          FortifySCA: false
+          FxCop: false
+          ModernCop: false
+          MSRD: false
+          PoliCheck: false
+          RoslynAnalyzers: false
+          SDLNativeRules: false
+          Semmle: false
+          SpotBugs: false
+          TSLint: false
+          WebScout: false
+          ToolLogsNotFoundAction: "Standard"
+
+      - task: PostAnalysis@2
+        displayName: "Break the build"
+        inputs:
+          GdnBreakPolicyMinSev: "Warning"
+          GdnBreakAllTools: false
+          GdnBreakGdnToolCredScan: true
+          GdnBreakGdnToolCredScanSeverity: "Warning"
+
+  - job: SecretsScanningGitleaks
+    displayName: "Secrets Scanning - Gitleaks"
+    steps:
+      - task: Gitleaks@1
+        inputs:
+          scanfolder: "$(Build.SourcesDirectory)"
+          configtype: "predefined"
+          predefinedconfigfile: "GitleaksUdmCombo.toml"
+          reportformat: "sarif"
